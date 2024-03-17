@@ -4,6 +4,7 @@ use std::{
 	error::Error,
 	fs,
 	io::{self, BufRead, BufReader, ErrorKind},
+	ops::Deref,
 	path::Path,
 	process::{Command, Stdio},
 	str,
@@ -194,7 +195,7 @@ impl AsRef<Cli> for Cli {
 	}
 }
 
-pub fn update_core_step(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Error)>> {
+fn update_core_step(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Error)>> {
 	let maybe_backup_database_fn = if cli.backup_database {
 		Some(|| -> Result<(), Box<dyn Error>> {
 			let substituted = cli.database_file_path.replace("{step}", "update_core");
@@ -224,7 +225,7 @@ pub fn update_core_step(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn E
 	update_core(maybe_backup_database_fn, maybe_commit_fn)
 }
 
-pub fn update_plugins_step(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Error)>> {
+fn update_plugins_step(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Error)>> {
 	let maybe_backup_database_fn = if cli.backup_database {
 		Some(|name: &str| -> Result<(), Box<dyn Error>> {
 			let substituted =
@@ -254,7 +255,7 @@ pub fn update_plugins_step(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dy
 	update_plugins(maybe_backup_database_fn, maybe_commit_fn)
 }
 
-pub fn update_themes_step(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Error)>> {
+fn update_themes_step(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Error)>> {
 	let maybe_backup_database_fn = if cli.backup_database {
 		Some(|name: &str| -> Result<(), Box<dyn Error>> {
 			let substituted =
@@ -284,7 +285,7 @@ pub fn update_themes_step(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn
 	update_themes(maybe_backup_database_fn, maybe_commit_fn)
 }
 
-pub fn update_translations_step(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Error)>> {
+fn update_translations_step(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Error)>> {
 	let maybe_backup_database_fn = if cli.backup_database {
 		Some(|| -> Result<(), Box<dyn Error>> {
 			let substituted = cli.database_file_path.replace("{step}", "update_translations");
@@ -305,4 +306,16 @@ pub fn update_translations_step(cli: &Cli, commit_prefix: &str) -> Result<(), Bo
 		None
 	};
 	update_translations(maybe_backup_database_fn, maybe_commit_fn)
+}
+
+pub fn main_loop(cli_ref: &Cli, commit_prefix: &str) -> Result<(), Box<dyn Error>> {
+	for step in cli_ref.steps.deref() {
+		match step {
+			Step::Core => update_core_step(cli_ref, commit_prefix),
+			Step::Plugins => update_plugins_step(cli_ref, commit_prefix),
+			Step::Themes => update_themes_step(cli_ref, commit_prefix),
+			Step::Translations => update_translations_step(cli_ref, commit_prefix),
+		}?;
+	}
+	Ok(())
 }

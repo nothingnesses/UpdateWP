@@ -1,8 +1,6 @@
 use clap::Parser;
-use std::{error::Error, ops::Deref, process::Command};
-use update_wp::{
-	update_core_step, update_plugins_step, update_themes_step, update_translations_step, Cli, Step,
-};
+use std::{error::Error, process::Command};
+use update_wp::{main_loop, Cli};
 
 fn main() -> Result<(), Box<dyn Error>> {
 	Command::new("wp").arg("--version").output().expect("The command `wp` not available");
@@ -17,14 +15,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 		_ => String::from(""),
 	};
 
-	for step in cli.steps.deref() {
-		match step {
-			Step::Core => update_core_step(cli_ref, commit_prefix.as_str()),
-			Step::Plugins => update_plugins_step(cli_ref, commit_prefix.as_str()),
-			Step::Themes => update_themes_step(cli_ref, commit_prefix.as_str()),
-			Step::Translations => update_translations_step(cli_ref, commit_prefix.as_str()),
-		}?;
-	}
+	main_loop(cli_ref, commit_prefix.as_str())?;
 
 	Ok(())
 }
