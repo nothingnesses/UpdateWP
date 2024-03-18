@@ -169,12 +169,12 @@ pub enum Step {
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 pub struct Cli {
-	/// Whether or not to backup the database before each step.
-	#[arg(short, long, default_value_t = true)]
-	pub backup_database: bool,
-	/// Whether or not to make commits after each step.
-	#[arg(short, long, default_value_t = true)]
-	pub commit: bool,
+	/// Disables backing-up of the database before each step.
+	#[arg(short = 'b', long)]
+	pub no_backup_database: bool,
+	/// Disables commiting after each step.
+	#[arg(short = 'c', long)]
+	pub no_commit: bool,
 	/// A string to add to the start of commit messages.
 	#[arg(short = 'p', long)]
 	pub commit_prefix: Option<String>,
@@ -196,7 +196,7 @@ impl AsRef<Cli> for Cli {
 }
 
 fn update_core_step(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Error)>> {
-	let maybe_backup_database_fn = if cli.backup_database {
+	let maybe_backup_database_fn = if !cli.no_backup_database {
 		Some(|| -> Result<(), Box<dyn Error>> {
 			let substituted = cli.database_file_path.replace("{step}", "update_core");
 			let substituted = substituted.replace(
@@ -209,7 +209,7 @@ fn update_core_step(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Error
 		None
 	};
 	let version = get_wordpress_version()?;
-	let maybe_commit_fn = if cli.commit {
+	let maybe_commit_fn = if !cli.no_commit {
 		Some(|new_version: &_| {
 			let _ = git_add_commit(
 				format!(
@@ -226,7 +226,7 @@ fn update_core_step(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Error
 }
 
 fn update_plugins_step(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Error)>> {
-	let maybe_backup_database_fn = if cli.backup_database {
+	let maybe_backup_database_fn = if !cli.no_backup_database {
 		Some(|name: &str| -> Result<(), Box<dyn Error>> {
 			let substituted =
 				cli.database_file_path.replace("{step}", format!("update_plugin.{name}").as_str());
@@ -239,7 +239,7 @@ fn update_plugins_step(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Er
 	} else {
 		None
 	};
-	let maybe_commit_fn = if cli.commit {
+	let maybe_commit_fn = if !cli.no_commit {
 		Some(|name: &_, version: &_, update_version: &_| {
 			let _ = git_add_commit(
 				format!(
@@ -256,7 +256,7 @@ fn update_plugins_step(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Er
 }
 
 fn update_themes_step(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Error)>> {
-	let maybe_backup_database_fn = if cli.backup_database {
+	let maybe_backup_database_fn = if !cli.no_backup_database {
 		Some(|name: &str| -> Result<(), Box<dyn Error>> {
 			let substituted =
 				cli.database_file_path.replace("{step}", format!("update_theme.{name}").as_str());
@@ -269,7 +269,7 @@ fn update_themes_step(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Err
 	} else {
 		None
 	};
-	let maybe_commit_fn = if cli.commit {
+	let maybe_commit_fn = if !cli.no_commit {
 		Some(|name: &_, version: &_, update_version: &_| {
 			let _ = git_add_commit(
 				format!(
@@ -286,7 +286,7 @@ fn update_themes_step(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Err
 }
 
 fn update_translations_step(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Error)>> {
-	let maybe_backup_database_fn = if cli.backup_database {
+	let maybe_backup_database_fn = if !cli.no_backup_database {
 		Some(|| -> Result<(), Box<dyn Error>> {
 			let substituted = cli.database_file_path.replace("{step}", "update_translations");
 			let substituted = substituted.replace(
@@ -298,7 +298,7 @@ fn update_translations_step(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(d
 	} else {
 		None
 	};
-	let maybe_commit_fn = if cli.commit {
+	let maybe_commit_fn = if !cli.no_commit {
 		Some(|| {
 			let _ = git_add_commit(format!("{commit_prefix}Update translations").as_str());
 		})
