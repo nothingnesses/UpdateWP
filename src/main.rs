@@ -8,14 +8,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 	let cli = Cli::parse();
 	let cli_ref = cli.as_ref();
-	let commit_prefix = match (!cli_ref.no_commit, cli_ref.commit_prefix.as_ref()) {
-		(true, Some(commit_prefix)) => {
+	let commit_prefix =
+		if let (false, Some(commit_prefix)) = (cli_ref.no_commit, cli_ref.commit_prefix.as_ref()) {
 			format!("{commit_prefix}{0}", cli_ref.separator)
-		}
-		_ => String::from(""),
-	};
+		} else {
+			String::from("")
+		};
 
-	main_loop(cli_ref, commit_prefix.as_str())?;
-
-	Ok(())
+	main_loop(cli_ref, commit_prefix.as_str())
 }

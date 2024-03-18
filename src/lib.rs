@@ -21,7 +21,7 @@ fn get_active_plugins() -> Result<Vec<String>, Box<dyn Error>> {
 		.output()?;
 	let stdout_str = str::from_utf8(stdout.stdout.as_ref())?;
 	let plugins: Vec<Plugin> = serde_json::from_str(stdout_str)?;
-	Result::Ok(plugins.into_iter().map(|plugin| plugin.name).collect())
+	Ok(plugins.into_iter().map(|plugin| plugin.name).collect())
 }
 
 fn stream_command(command: &mut Command) -> Result<(), Box<dyn Error>> {
@@ -60,26 +60,24 @@ fn get_wordpress_version() -> Result<String, Box<dyn Error>> {
 	Ok(String::from_utf8(Command::new("wp").args(["core", "version"]).output()?.stdout)?)
 }
 
-fn update_core(
+fn update(
 	maybe_backup_database_fn: Option<impl Fn() -> Result<(), Box<dyn Error>>>,
-	maybe_commit_fn: Option<impl Fn(&str)>,
+	update_fn: impl Fn() -> Result<(), Box<dyn Error>>,
+	maybe_commit_fn: Option<impl Fn() -> Result<(), Box<dyn Error>>>,
 ) -> Result<(), Box<dyn Error>> {
 	if let Some(backup_database_fn) = maybe_backup_database_fn {
 		backup_database_fn()?;
 	}
-	let active_plugins = get_active_plugins()?;
-	activate_plugins(false, active_plugins.as_ref())?;
-	stream_command(Command::new("wp").args(["core", "update"]))?;
-	activate_plugins(true, active_plugins.as_ref())?;
+	update_fn()?;
 	if let Some(commit_fn) = maybe_commit_fn {
-		commit_fn(get_wordpress_version()?.as_str());
+		commit_fn()?;
 	}
 	Ok(())
 }
 
-fn update(
+fn update_in_steps(
 	maybe_backup_database_fn: Option<impl Fn(&str) -> Result<(), Box<dyn Error>>>,
-	maybe_commit_fn: Option<impl Fn(&str, &str, &str)>,
+	maybe_commit_fn: Option<impl Fn(&str, &str, &str) -> Result<(), Box<(dyn Error)>>>,
 	subcommand: &str,
 ) -> Result<(), Box<dyn Error>> {
 	#[derive(Deserialize)]
@@ -117,42 +115,8 @@ fn update(
 				update.name.as_str(),
 				update.version.as_str(),
 				update.update_version.as_str(),
-			);
+			)?;
 		}
-	}
-	Ok(())
-}
-
-fn update_themes(
-	maybe_backup_database_fn: Option<impl Fn(&str) -> Result<(), Box<dyn Error>>>,
-	maybe_commit_fn: Option<impl Fn(&str, &str, &str)>,
-) -> Result<(), Box<dyn Error>> {
-	update(maybe_backup_database_fn, maybe_commit_fn, "theme")
-}
-
-fn update_plugins(
-	maybe_backup_database_fn: Option<impl Fn(&str) -> Result<(), Box<dyn Error>>>,
-	maybe_commit_fn: Option<impl Fn(&str, &str, &str)>,
-) -> Result<(), Box<dyn Error>> {
-	update(maybe_backup_database_fn, maybe_commit_fn, "plugin")
-}
-
-fn update_translations(
-	maybe_backup_database_fn: Option<impl Fn() -> Result<(), Box<dyn Error>>>,
-	maybe_commit_fn: Option<impl Fn()>,
-) -> Result<(), Box<dyn Error>> {
-	if let Some(backup_database_fn) = maybe_backup_database_fn {
-		backup_database_fn()?;
-	}
-	stream_command(
-		Command::new("wp")
-			.args([
-				"eval",
-				"require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php'; (new Language_Pack_Upgrader(new Language_Pack_Upgrader_Skin(['url' => 'update-core.php?action=do-translation-upgrade', 'nonce' => 'upgrade-translations', 'title' => __('Update Translations'), 'context' => WP_LANG_DIR])))->bulk_upgrade();",
-			])
-	)?;
-	if let Some(commit_fn) = maybe_commit_fn {
-		commit_fn();
 	}
 	Ok(())
 }
@@ -176,7 +140,7 @@ pub struct Cli {
 	/// Disables backing-up of the database before each step.
 	#[arg(short = 'b', long)]
 	pub no_backup_database: bool,
-	/// Disables commiting after each step.
+	/// Disables committing after each step.
 	#[arg(short = 'c', long)]
 	pub no_commit: bool,
 	/// A string to add to the start of commit messages.
@@ -185,7 +149,7 @@ pub struct Cli {
 	/// Path to use for storing database backups.
 	#[arg(short, long, default_value_t = String::from("../{unix_time}.{step}.sql"))]
 	pub database_file_path: String,
-	/// String to use as a separator.
+	/// String to use as a separator in commit messages.
 	#[arg(long, default_value_t = String::from(": "))]
 	pub separator: String,
 	/// The steps and order of steps taken.
@@ -199,9 +163,11 @@ impl AsRef<Cli> for Cli {
 	}
 }
 
-fn update_core_step(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Error)>> {
-	let maybe_backup_database_fn = if !cli.no_backup_database {
-		Some(|| -> Result<(), Box<dyn Error>> {
+fn update_core(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Error)>> {
+	let maybe_backup_database_fn = if cli.no_backup_database {
+		None
+	} else {
+		Some(|| {
 			let substituted = cli.database_file_path.replace("{step}", "update_core");
 			let substituted = substituted.replace(
 				"{unix_time}",
@@ -209,29 +175,36 @@ fn update_core_step(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Error
 			);
 			backup_database(substituted.as_ref())
 		})
-	} else {
-		None
 	};
-	let version = get_wordpress_version()?;
-	let maybe_commit_fn = if !cli.no_commit {
-		Some(|new_version: &_| {
-			let _ = git_add_commit(
+	let update_fn = || {
+		let active_plugins = get_active_plugins()?;
+		activate_plugins(false, active_plugins.as_ref())?;
+		stream_command(Command::new("wp").args(["core", "update"]))?;
+		activate_plugins(true, active_plugins.as_ref())
+	};
+	let maybe_commit_fn = if cli.no_commit {
+		None
+	} else {
+		let version = get_wordpress_version()?;
+		Some(move || {
+			git_add_commit(
 				format!(
 					"{commit_prefix}Update WordPress Core{0}{version} -> {1}",
-					cli.separator, new_version
+					cli.separator,
+					get_wordpress_version()?
 				)
 				.as_str(),
-			);
+			)
 		})
-	} else {
-		None
 	};
-	update_core(maybe_backup_database_fn, maybe_commit_fn)
+	update(maybe_backup_database_fn, update_fn, maybe_commit_fn)
 }
 
-fn update_plugins_step(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Error)>> {
-	let maybe_backup_database_fn = if !cli.no_backup_database {
-		Some(|name: &str| -> Result<(), Box<dyn Error>> {
+fn update_plugins(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Error)>> {
+	let maybe_backup_database_fn = if cli.no_backup_database {
+		None
+	} else {
+		Some(|name: &_| {
 			let substituted =
 				cli.database_file_path.replace("{step}", format!("update_plugin.{name}").as_str());
 			let substituted = substituted.replace(
@@ -240,28 +213,28 @@ fn update_plugins_step(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Er
 			);
 			backup_database(substituted.as_ref())
 		})
-	} else {
-		None
 	};
-	let maybe_commit_fn = if !cli.no_commit {
+	let maybe_commit_fn = if cli.no_commit {
+		None
+	} else {
 		Some(|name: &_, version: &_, update_version: &_| {
-			let _ = git_add_commit(
+			git_add_commit(
 				format!(
 					"{commit_prefix}Update plugin{0}{name}{0}{version} -> {update_version}",
 					cli.separator
 				)
 				.as_str(),
-			);
+			)
 		})
-	} else {
-		None
 	};
-	update_plugins(maybe_backup_database_fn, maybe_commit_fn)
+	update_in_steps(maybe_backup_database_fn, maybe_commit_fn, "plugin")
 }
 
-fn update_themes_step(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Error)>> {
-	let maybe_backup_database_fn = if !cli.no_backup_database {
-		Some(|name: &str| -> Result<(), Box<dyn Error>> {
+fn update_themes(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Error)>> {
+	let maybe_backup_database_fn = if cli.no_backup_database {
+		None
+	} else {
+		Some(|name: &_| {
 			let substituted =
 				cli.database_file_path.replace("{step}", format!("update_theme.{name}").as_str());
 			let substituted = substituted.replace(
@@ -270,28 +243,28 @@ fn update_themes_step(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Err
 			);
 			backup_database(substituted.as_ref())
 		})
-	} else {
-		None
 	};
-	let maybe_commit_fn = if !cli.no_commit {
+	let maybe_commit_fn = if cli.no_commit {
+		None
+	} else {
 		Some(|name: &_, version: &_, update_version: &_| {
-			let _ = git_add_commit(
+			git_add_commit(
 				format!(
 					"{commit_prefix}Update theme{0}{name}{0}{version} -> {update_version}",
 					cli.separator
 				)
 				.as_str(),
-			);
+			)
 		})
-	} else {
-		None
 	};
-	update_themes(maybe_backup_database_fn, maybe_commit_fn)
+	update_in_steps(maybe_backup_database_fn, maybe_commit_fn, "theme")
 }
 
-fn update_translations_step(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Error)>> {
-	let maybe_backup_database_fn = if !cli.no_backup_database {
-		Some(|| -> Result<(), Box<dyn Error>> {
+fn update_translations(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Error)>> {
+	let maybe_backup_database_fn = if cli.no_backup_database {
+		None
+	} else {
+		Some(|| {
 			let substituted = cli.database_file_path.replace("{step}", "update_translations");
 			let substituted = substituted.replace(
 				"{unix_time}",
@@ -299,26 +272,31 @@ fn update_translations_step(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(d
 			);
 			backup_database(substituted.as_ref())
 		})
-	} else {
-		None
 	};
-	let maybe_commit_fn = if !cli.no_commit {
-		Some(|| {
-			let _ = git_add_commit(format!("{commit_prefix}Update translations").as_str());
-		})
-	} else {
-		None
+	let update_fn = || {
+		stream_command(
+			Command::new("wp")
+				.args([
+					"eval",
+					"require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php'; (new Language_Pack_Upgrader(new Language_Pack_Upgrader_Skin(['url' => 'update-core.php?action=do-translation-upgrade', 'nonce' => 'upgrade-translations', 'title' => __('Update Translations'), 'context' => WP_LANG_DIR])))->bulk_upgrade();",
+				])
+		)
 	};
-	update_translations(maybe_backup_database_fn, maybe_commit_fn)
+	let maybe_commit_fn = if cli.no_commit {
+		None
+	} else {
+		Some(|| git_add_commit(format!("{commit_prefix}Update translations").as_str()))
+	};
+	update(maybe_backup_database_fn, update_fn, maybe_commit_fn)
 }
 
 pub fn main_loop(cli_ref: &Cli, commit_prefix: &str) -> Result<(), Box<dyn Error>> {
 	for step in cli_ref.steps.deref() {
 		match step {
-			Step::Core => update_core_step(cli_ref, commit_prefix),
-			Step::Plugins => update_plugins_step(cli_ref, commit_prefix),
-			Step::Themes => update_themes_step(cli_ref, commit_prefix),
-			Step::Translations => update_translations_step(cli_ref, commit_prefix),
+			Step::Core => update_core(cli_ref, commit_prefix),
+			Step::Plugins => update_plugins(cli_ref, commit_prefix),
+			Step::Themes => update_themes(cli_ref, commit_prefix),
+			Step::Translations => update_translations(cli_ref, commit_prefix),
 		}?;
 	}
 	Ok(())
