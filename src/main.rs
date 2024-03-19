@@ -15,5 +15,5 @@ fn main() -> OrError<()> {
 			String::from("")
 		};
 
-	main_loop(cli_ref, commit_prefix.as_str())
+	main_loop(cli_ref, commit_prefix.as_str(), cli_ref.wordpress_path.as_str())
 }
