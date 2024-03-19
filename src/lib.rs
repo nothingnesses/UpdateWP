@@ -128,6 +128,10 @@ fn git_add_commit(message: &str) -> OrError<()> {
 	stream_command(Command::new("git").args(["commit", "-m", message]))
 }
 
+fn unix_time() -> OrError<u64> {
+	Ok(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())
+}
+
 #[derive(clap::ValueEnum, Clone)]
 pub enum Step {
 	Core,
@@ -171,10 +175,7 @@ fn update_core(cli: &Cli, commit_prefix: &str) -> OrError<()> {
 	} else {
 		Some(|| {
 			let substituted = cli.database_file_path.replace("{step}", "update_core");
-			let substituted = substituted.replace(
-				"{unix_time}",
-				format!("{}", SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()).as_ref(),
-			);
+			let substituted = substituted.replace("{unix_time}", unix_time()?.to_string().as_str());
 			backup_database(substituted.as_ref())
 		})
 	};
@@ -209,10 +210,7 @@ fn update_plugins(cli: &Cli, commit_prefix: &str) -> OrError<()> {
 		Some(|name: &_| {
 			let substituted =
 				cli.database_file_path.replace("{step}", format!("update_plugin.{name}").as_str());
-			let substituted = substituted.replace(
-				"{unix_time}",
-				format!("{}", SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()).as_ref(),
-			);
+			let substituted = substituted.replace("{unix_time}", unix_time()?.to_string().as_str());
 			backup_database(substituted.as_ref())
 		})
 	};
@@ -239,10 +237,7 @@ fn update_themes(cli: &Cli, commit_prefix: &str) -> OrError<()> {
 		Some(|name: &_| {
 			let substituted =
 				cli.database_file_path.replace("{step}", format!("update_theme.{name}").as_str());
-			let substituted = substituted.replace(
-				"{unix_time}",
-				format!("{}", SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()).as_ref(),
-			);
+			let substituted = substituted.replace("{unix_time}", unix_time()?.to_string().as_str());
 			backup_database(substituted.as_ref())
 		})
 	};
@@ -268,10 +263,7 @@ fn update_translations(cli: &Cli, commit_prefix: &str) -> OrError<()> {
 	} else {
 		Some(|| {
 			let substituted = cli.database_file_path.replace("{step}", "update_translations");
-			let substituted = substituted.replace(
-				"{unix_time}",
-				format!("{}", SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()).as_ref(),
-			);
+			let substituted = substituted.replace("{unix_time}", unix_time()?.to_string().as_str());
 			backup_database(substituted.as_ref())
 		})
 	};
