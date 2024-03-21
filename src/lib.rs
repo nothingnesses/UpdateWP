@@ -135,9 +135,10 @@ fn update_in_steps(
 			format!("--path={wordpress_path}").as_str(),
 		]))?;
 		// Delete stray files
-		if let Ok(true) = Path::new("./$XDG_CACHE_HOME").try_exists() {
-			fs::remove_dir_all("./$XDG_CACHE_HOME")?;
-			println!("Removed directory \"./$XDG_CACHE_HOME\".");
+		let stray = format!("{wordpress_path}/$XDG_CACHE_HOME");
+		if let Ok(true) = Path::new(&stray).try_exists() {
+			fs::remove_dir_all(&stray)?;
+			println!("Removed directory \"{}\".", stray);
 		}
 		if let Some(ref commit_fn) = maybe_commit_fn {
 			commit_fn(
