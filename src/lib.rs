@@ -82,7 +82,24 @@ fn get_wordpress_version(wordpress_path: &str) -> OrError<String> {
 	)?)
 }
 
+fn remove(paths: &[String]) -> OrError<()> {
+	for path in paths {
+		if let Ok(true) = Path::new(&path).try_exists() {
+			let file_type = fs::metadata(path)?.file_type();
+			if file_type.is_dir() {
+				fs::remove_dir_all(path)?;
+			} else {
+				fs::remove_file(path)?;
+			}
+			println!("Removed \"{}\".", path);
+		}
+	}
+	Ok(())
+}
+
 fn update(
+	wordpress_path: &str,
+	remove_paths: &[String],
 	maybe_backup_database_fn: Option<impl Fn() -> OrError<()>>,
 	update_fn: impl Fn() -> OrError<()>,
 	maybe_commit_fn: Option<impl Fn() -> OrError<()>>,
@@ -91,6 +108,9 @@ fn update(
 		backup_database_fn()?;
 	}
 	update_fn()?;
+	let remove_paths: Vec<String> =
+		remove_paths.iter().map(|path| path.replace("{wordpress_path}", wordpress_path)).collect();
+	remove(&remove_paths)?;
 	if let Some(commit_fn) = maybe_commit_fn {
 		commit_fn()?;
 	}
@@ -99,6 +119,7 @@ fn update(
 
 fn update_in_steps(
 	wordpress_path: &str,
+	remove_paths: &[String],
 	maybe_backup_database_fn: Option<impl Fn(&str) -> OrError<()>>,
 	maybe_commit_fn: Option<impl Fn(&str, &str, &str) -> OrError<()>>,
 	subcommand: &str,
@@ -124,6 +145,8 @@ fn update_in_steps(
 			.stdout
 			.as_ref(),
 	)?)?;
+	let remove_paths: Vec<String> =
+		remove_paths.iter().map(|path| path.replace("{wordpress_path}", wordpress_path)).collect();
 	for update in &updates {
 		if let Some(ref backup_database_fn) = maybe_backup_database_fn {
 			backup_database_fn(update.name.as_str())?;
@@ -134,12 +157,7 @@ fn update_in_steps(
 			update.name.as_str(),
 			format!("--path={wordpress_path}").as_str(),
 		]))?;
-		// Delete stray files
-		let stray = format!("{wordpress_path}/$XDG_CACHE_HOME");
-		if let Ok(true) = Path::new(&stray).try_exists() {
-			fs::remove_dir_all(&stray)?;
-			println!("Removed directory \"{}\".", stray);
-		}
+		remove(&remove_paths)?;
 		if let Some(ref commit_fn) = maybe_commit_fn {
 			commit_fn(
 				update.name.as_str(),
@@ -177,10 +195,10 @@ pub struct Cli {
 	/// Path to use for storing database backups.
 	#[arg(short, long, default_value_t = String::from("{wordpress_path}/../{unix_time}.{step}.sql"))]
 	pub database_file_path: String,
-	/// Disables backing-up of the database before each step.
+	/// Disables backing-up of the database before each (sub-)step.
 	#[arg(short = 'b', long)]
 	pub no_backup_database: bool,
-	/// Disables committing after each step.
+	/// Disables committing after each (sub-)step.
 	#[arg(short = 'c', long)]
 	pub no_commit: bool,
 	/// String to use as a separator in commit messages.
@@ -189,6 +207,9 @@ pub struct Cli {
 	/// The steps and order of steps taken.
 	#[arg(short, long, value_enum, default_values_t = [Step::Core, Step::Themes, Step::Plugins, Step::Translations])]
 	pub steps: Vec<Step>,
+	/// Paths to remove after each (sub-)step, before committing.
+	#[arg(short, long, default_values_t = [String::from("{wordpress_path}/$XDG_CACHE_HOME")])]
+	pub remove_paths: Vec<String>,
 	/// Path of the WordPress installation to update.
 	#[arg(short, long, default_value_t = String::from("./"))]
 	pub wordpress_path: String,
@@ -237,7 +258,7 @@ fn update_core(cli: &Cli, commit_prefix: &str, wordpress_path: &str) -> OrError<
 			)
 		})
 	};
-	update(maybe_backup_database_fn, update_fn, maybe_commit_fn)
+	update(wordpress_path, &cli.remove_paths, maybe_backup_database_fn, update_fn, maybe_commit_fn)
 }
 
 fn update_plugins(cli: &Cli, commit_prefix: &str, wordpress_path: &str) -> OrError<()> {
@@ -266,7 +287,13 @@ fn update_plugins(cli: &Cli, commit_prefix: &str, wordpress_path: &str) -> OrErr
 			)
 		})
 	};
-	update_in_steps(wordpress_path, maybe_backup_database_fn, maybe_commit_fn, "plugin")
+	update_in_steps(
+		wordpress_path,
+		&cli.remove_paths,
+		maybe_backup_database_fn,
+		maybe_commit_fn,
+		"plugin",
+	)
 }
 
 fn update_themes(cli: &Cli, commit_prefix: &str, wordpress_path: &str) -> OrError<()> {
@@ -295,7 +322,13 @@ fn update_themes(cli: &Cli, commit_prefix: &str, wordpress_path: &str) -> OrErro
 			)
 		})
 	};
-	update_in_steps(wordpress_path, maybe_backup_database_fn, maybe_commit_fn, "theme")
+	update_in_steps(
+		wordpress_path,
+		&cli.remove_paths,
+		maybe_backup_database_fn,
+		maybe_commit_fn,
+		"theme",
+	)
 }
 
 fn update_translations(cli: &Cli, commit_prefix: &str, wordpress_path: &str) -> OrError<()> {
@@ -326,7 +359,7 @@ fn update_translations(cli: &Cli, commit_prefix: &str, wordpress_path: &str) -> 
 			git_add_commit(wordpress_path, format!("{commit_prefix}Update translations").as_str())
 		})
 	};
-	update(maybe_backup_database_fn, update_fn, maybe_commit_fn)
+	update(wordpress_path, &cli.remove_paths, maybe_backup_database_fn, update_fn, maybe_commit_fn)
 }
 
 pub fn main_loop(cli_ref: &Cli, commit_prefix: &str, wordpress_path: &str) -> OrError<()> {
