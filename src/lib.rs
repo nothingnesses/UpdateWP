@@ -144,9 +144,13 @@ fn update_translations(
 	if let Some(backup_database_fn) = maybe_backup_database_fn {
 		backup_database_fn()?;
 	}
-	stream_command(Command::new("wp").args(["language", "core", "update"]))?;
-	stream_command(Command::new("wp").args(["language", "theme", "update", "--all"]))?;
-	stream_command(Command::new("wp").args(["language", "plugin", "update", "--all"]))?;
+	stream_command(
+		Command::new("wp")
+			.args([
+				"eval",
+				"require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php'; (new Language_Pack_Upgrader(new Language_Pack_Upgrader_Skin(['url' => 'update-core.php?action=do-translation-upgrade', 'nonce' => 'upgrade-translations', 'title' => __('Update Translations'), 'context' => WP_LANG_DIR])))->bulk_upgrade();",
+			])
+	)?;
 	if let Some(commit_fn) = maybe_commit_fn {
 		commit_fn();
 	}
