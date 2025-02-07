@@ -1,8 +1,8 @@
 use clap::Parser;
-use std::{error::Error, process::Command};
-use update_wp::{main_loop, Cli};
+use std::process::Command;
+use update_wp::{main_loop, Cli, OrError};
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn main() -> OrError<()> {
 	Command::new("wp").arg("--version").output().expect("The command `wp` not available");
 	Command::new("git").arg("--version").output().expect("The command `git` not available");
 

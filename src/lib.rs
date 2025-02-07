@@ -11,7 +11,9 @@ use std::{
 	time::{SystemTime, UNIX_EPOCH},
 };
 
-fn get_active_plugins() -> Result<Vec<String>, Box<dyn Error>> {
+pub type OrError<A> = Result<A, Box<dyn Error>>;
+
+fn get_active_plugins() -> OrError<Vec<String>> {
 	#[derive(Deserialize)]
 	struct Plugin {
 		name: String,
@@ -24,7 +26,7 @@ fn get_active_plugins() -> Result<Vec<String>, Box<dyn Error>> {
 	Ok(plugins.into_iter().map(|plugin| plugin.name).collect())
 }
 
-fn stream_command(command: &mut Command) -> Result<(), Box<dyn Error>> {
+fn stream_command(command: &mut Command) -> OrError<()> {
 	let stdout = command
 		.stdout(Stdio::piped())
 		.spawn()?
@@ -35,7 +37,7 @@ fn stream_command(command: &mut Command) -> Result<(), Box<dyn Error>> {
 	Ok(())
 }
 
-fn activate_plugins(activate: bool, plugins: &[String]) -> Result<(), Box<dyn Error>> {
+fn activate_plugins(activate: bool, plugins: &[String]) -> OrError<()> {
 	let mut args = vec!["plugin", if activate { "activate" } else { "deactivate" }];
 	args.extend_from_slice(
 		plugins.iter().map(|string| string.as_str()).collect::<Vec<_>>().as_slice(),
@@ -43,7 +45,7 @@ fn activate_plugins(activate: bool, plugins: &[String]) -> Result<(), Box<dyn Er
 	stream_command(Command::new("wp").args(args))
 }
 
-fn ensure_path_prefix(path: &str) -> Result<(), Box<dyn Error>> {
+fn ensure_path_prefix(path: &str) -> OrError<()> {
 	if let Some(prefix) = Path::new(path).parent() {
 		fs::create_dir_all(prefix)?;
 		println!("Created path \"{}/\".", prefix.display());
@@ -51,20 +53,20 @@ fn ensure_path_prefix(path: &str) -> Result<(), Box<dyn Error>> {
 	Ok(())
 }
 
-fn backup_database(path: &str) -> Result<(), Box<dyn Error>> {
+fn backup_database(path: &str) -> OrError<()> {
 	ensure_path_prefix(path)?;
 	stream_command(Command::new("wp").args(["db", "export", path, "--defaults"]))
 }
 
-fn get_wordpress_version() -> Result<String, Box<dyn Error>> {
+fn get_wordpress_version() -> OrError<String> {
 	Ok(String::from_utf8(Command::new("wp").args(["core", "version"]).output()?.stdout)?)
 }
 
 fn update(
-	maybe_backup_database_fn: Option<impl Fn() -> Result<(), Box<dyn Error>>>,
-	update_fn: impl Fn() -> Result<(), Box<dyn Error>>,
-	maybe_commit_fn: Option<impl Fn() -> Result<(), Box<dyn Error>>>,
-) -> Result<(), Box<dyn Error>> {
+	maybe_backup_database_fn: Option<impl Fn() -> OrError<()>>,
+	update_fn: impl Fn() -> OrError<()>,
+	maybe_commit_fn: Option<impl Fn() -> OrError<()>>,
+) -> OrError<()> {
 	if let Some(backup_database_fn) = maybe_backup_database_fn {
 		backup_database_fn()?;
 	}
@@ -76,10 +78,10 @@ fn update(
 }
 
 fn update_in_steps(
-	maybe_backup_database_fn: Option<impl Fn(&str) -> Result<(), Box<dyn Error>>>,
-	maybe_commit_fn: Option<impl Fn(&str, &str, &str) -> Result<(), Box<(dyn Error)>>>,
+	maybe_backup_database_fn: Option<impl Fn(&str) -> OrError<()>>,
+	maybe_commit_fn: Option<impl Fn(&str, &str, &str) -> OrError<()>>,
 	subcommand: &str,
-) -> Result<(), Box<dyn Error>> {
+) -> OrError<()> {
 	#[derive(Deserialize)]
 	struct Update {
 		name: String,
@@ -121,7 +123,7 @@ fn update_in_steps(
 	Ok(())
 }
 
-fn git_add_commit(message: &str) -> Result<(), Box<dyn Error>> {
+fn git_add_commit(message: &str) -> OrError<()> {
 	stream_command(Command::new("git").args(["add", "."]))?;
 	stream_command(Command::new("git").args(["commit", "-m", message]))
 }
@@ -163,7 +165,7 @@ impl AsRef<Cli> for Cli {
 	}
 }
 
-fn update_core(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Error)>> {
+fn update_core(cli: &Cli, commit_prefix: &str) -> OrError<()> {
 	let maybe_backup_database_fn = if cli.no_backup_database {
 		None
 	} else {
@@ -200,7 +202,7 @@ fn update_core(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Error)>> {
 	update(maybe_backup_database_fn, update_fn, maybe_commit_fn)
 }
 
-fn update_plugins(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Error)>> {
+fn update_plugins(cli: &Cli, commit_prefix: &str) -> OrError<()> {
 	let maybe_backup_database_fn = if cli.no_backup_database {
 		None
 	} else {
@@ -230,7 +232,7 @@ fn update_plugins(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Error)>
 	update_in_steps(maybe_backup_database_fn, maybe_commit_fn, "plugin")
 }
 
-fn update_themes(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Error)>> {
+fn update_themes(cli: &Cli, commit_prefix: &str) -> OrError<()> {
 	let maybe_backup_database_fn = if cli.no_backup_database {
 		None
 	} else {
@@ -260,7 +262,7 @@ fn update_themes(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Error)>>
 	update_in_steps(maybe_backup_database_fn, maybe_commit_fn, "theme")
 }
 
-fn update_translations(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Error)>> {
+fn update_translations(cli: &Cli, commit_prefix: &str) -> OrError<()> {
 	let maybe_backup_database_fn = if cli.no_backup_database {
 		None
 	} else {
@@ -290,7 +292,7 @@ fn update_translations(cli: &Cli, commit_prefix: &str) -> Result<(), Box<(dyn Er
 	update(maybe_backup_database_fn, update_fn, maybe_commit_fn)
 }
 
-pub fn main_loop(cli_ref: &Cli, commit_prefix: &str) -> Result<(), Box<dyn Error>> {
+pub fn main_loop(cli_ref: &Cli, commit_prefix: &str) -> OrError<()> {
 	for step in cli_ref.steps.deref() {
 		match step {
 			Step::Core => update_core(cli_ref, commit_prefix),
