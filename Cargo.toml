@@ -1,6 +1,6 @@
 [package]
 name = "update-wp"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Update a WordPress installation, its plugins, themes and translations step-by-step, optionally backing up the database before each step and making commits after each one."
 license = "BlueOak-1.0.0"

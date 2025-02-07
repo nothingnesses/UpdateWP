@@ -1,3 +1,5 @@
+// @todo Improve handling of deprecation warnings from outputs in get_active_plugins, get_wordpress_version, update_in_steps.
+
 use clap::Parser;
 use serde::Deserialize;
 use std::{
@@ -11,7 +13,19 @@ use std::{
 	time::{SystemTime, UNIX_EPOCH},
 };
 
+const JSON_START: &str = "[{\"";
+
 pub type OrError<A> = Result<A, Box<dyn Error>>;
+
+fn get_json(string: &str) -> Option<&str> {
+	if string.starts_with(JSON_START) {
+		Some(string)
+	} else if let Some(index) = string.find(JSON_START) {
+		Some(&string[index..])
+	} else {
+		None
+	}
+}
 
 fn get_active_plugins(wordpress_path: &str) -> OrError<Vec<String>> {
 	#[derive(Deserialize)]
@@ -29,7 +43,7 @@ fn get_active_plugins(wordpress_path: &str) -> OrError<Vec<String>> {
 		])
 		.output()?;
 	let stdout_str = str::from_utf8(stdout.stdout.as_ref())?;
-	let plugins: Vec<Plugin> = serde_json::from_str(stdout_str)?;
+	let plugins: Vec<Plugin> = serde_json::from_str(get_json(stdout_str).unwrap_or("[]"))?;
 	Ok(plugins.into_iter().map(|plugin| plugin.name).collect())
 }
 
@@ -131,20 +145,23 @@ fn update_in_steps(
 		update_version: String,
 	}
 
-	let updates = serde_json::from_str::<Vec<Update>>(str::from_utf8(
-		Command::new("wp")
-			.args([
-				subcommand,
-				"list",
-				"--update=available",
-				"--fields=name,version,update_version",
-				"--format=json",
-				format!("--path={wordpress_path}").as_str(),
-			])
-			.output()?
-			.stdout
-			.as_ref(),
-	)?)?;
+	let updates = serde_json::from_str::<Vec<Update>>(
+		get_json(str::from_utf8(
+			Command::new("wp")
+				.args([
+					subcommand,
+					"list",
+					"--update=available",
+					"--fields=name,version,update_version",
+					"--format=json",
+					format!("--path={wordpress_path}").as_str(),
+				])
+				.output()?
+				.stdout
+				.as_ref(),
+		)?)
+		.unwrap_or("[]"),
+	)?;
 	let remove_paths: Vec<String> =
 		remove_paths.iter().map(|path| path.replace("{wordpress_path}", wordpress_path)).collect();
 	for update in &updates {
