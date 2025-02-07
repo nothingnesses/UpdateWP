@@ -135,6 +135,7 @@ fn update_in_steps(
 	wordpress_path: &str,
 	remove_paths: &[String],
 	maybe_backup_database_fn: Option<impl Fn(&str) -> OrError<()>>,
+	exclude: &[String],
 	maybe_commit_fn: Option<impl Fn(&str, &str, &str) -> OrError<()>>,
 	subcommand: &str,
 ) -> OrError<()> {
@@ -164,7 +165,7 @@ fn update_in_steps(
 	)?;
 	let remove_paths: Vec<String> =
 		remove_paths.iter().map(|path| path.replace("{wordpress_path}", wordpress_path)).collect();
-	for update in &updates {
+	for update in updates.iter().filter(|update| !exclude.contains(&update.name)) {
 		if let Some(ref backup_database_fn) = maybe_backup_database_fn {
 			backup_database_fn(update.name.as_str())?;
 		}
@@ -212,6 +213,12 @@ pub struct Cli {
 	/// Path to use for storing database backups.
 	#[arg(short, long, default_value_t = String::from("{wordpress_path}/../{unix_time}.{step}.sql"))]
 	pub database_file_path: String,
+	/// Plugins to exclude from updates.
+	#[arg(short = 'e', long)]
+	pub exclude_plugins: Vec<String>,
+	/// Themes to exclude from updates.
+	#[arg(short = 't', long)]
+	pub exclude_themes: Vec<String>,
 	/// Disables backing-up of the database before each (sub-)step.
 	#[arg(short = 'b', long)]
 	pub no_backup_database: bool,
@@ -308,6 +315,7 @@ fn update_plugins(cli: &Cli, commit_prefix: &str, wordpress_path: &str) -> OrErr
 		wordpress_path,
 		&cli.remove_paths,
 		maybe_backup_database_fn,
+		&cli.exclude_plugins,
 		maybe_commit_fn,
 		"plugin",
 	)
@@ -343,6 +351,7 @@ fn update_themes(cli: &Cli, commit_prefix: &str, wordpress_path: &str) -> OrErro
 		wordpress_path,
 		&cli.remove_paths,
 		maybe_backup_database_fn,
+		&cli.exclude_themes,
 		maybe_commit_fn,
 		"theme",
 	)
@@ -379,7 +388,15 @@ fn update_translations(cli: &Cli, commit_prefix: &str, wordpress_path: &str) -> 
 	update(wordpress_path, &cli.remove_paths, maybe_backup_database_fn, update_fn, maybe_commit_fn)
 }
 
-pub fn main_loop(cli_ref: &Cli, commit_prefix: &str, wordpress_path: &str) -> OrError<()> {
+pub fn main_loop(cli_ref: &Cli) -> OrError<()> {
+	let commit_prefix =
+		if let (false, Some(commit_prefix)) = (cli_ref.no_commit, cli_ref.commit_prefix.as_ref()) {
+			format!("{commit_prefix}{0}", cli_ref.separator)
+		} else {
+			String::from("")
+		};
+	let commit_prefix = commit_prefix.as_str();
+	let wordpress_path = cli_ref.wordpress_path.as_str();
 	for step in cli_ref.steps.deref() {
 		match step {
 			Step::Core => update_core(cli_ref, commit_prefix, wordpress_path),
