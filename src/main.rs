@@ -35,27 +35,16 @@ fn stream_command(command: &mut Command) -> Result<(), Box<dyn Error>> {
 	Ok(())
 }
 
-fn deactivate_plugins(plugins: &[String]) -> Result<(), Box<dyn Error>> {
-	let mut args = vec!["plugin", "deactivate"];
+fn activate_plugins(activate: bool, plugins: &[String]) -> Result<(), Box<dyn Error>> {
+	let mut args = vec!["plugin", if activate { "activate" } else { "deactivate" }];
 	args.extend_from_slice(
 		plugins.iter().map(|string| string.as_str()).collect::<Vec<_>>().as_slice(),
 	);
-	stream_command(Command::new("wp").args(args))?;
-	Ok(())
-}
-
-fn activate_plugins(plugins: &[String]) -> Result<(), Box<dyn Error>> {
-	let mut args = vec!["plugin", "activate"];
-	args.extend_from_slice(
-		plugins.iter().map(|string| string.as_str()).collect::<Vec<_>>().as_slice(),
-	);
-	stream_command(Command::new("wp").args(args))?;
-	Ok(())
+	stream_command(Command::new("wp").args(args))
 }
 
 fn ensure_path_prefix(path: &str) -> Result<(), Box<dyn Error>> {
-	let maybe_prefix = Path::new(path).parent();
-	if let Some(prefix) = maybe_prefix {
+	if let Some(prefix) = Path::new(path).parent() {
 		fs::create_dir_all(prefix)?;
 		println!("Created path \"{}/\".", prefix.display());
 	}
@@ -64,34 +53,33 @@ fn ensure_path_prefix(path: &str) -> Result<(), Box<dyn Error>> {
 
 fn backup_database(path: &str) -> Result<(), Box<dyn Error>> {
 	ensure_path_prefix(path)?;
-	stream_command(Command::new("wp").args(["db", "export", &path, "--defaults"]))?;
-	Ok(())
+	stream_command(Command::new("wp").args(["db", "export", &path, "--defaults"]))
 }
 
 fn get_wordpress_version() -> Result<String, Box<dyn Error>> {
 	Ok(String::from_utf8(Command::new("wp").args(["core", "version"]).output()?.stdout)?)
 }
 
-fn update_core<F: Fn() -> Result<(), Box<dyn Error>>, G: Fn(&str)>(
-	maybe_backup_database_fn: Option<F>,
-	maybe_commit_fn: Option<G>,
+fn update_core(
+	maybe_backup_database_fn: Option<impl Fn() -> Result<(), Box<dyn Error>>>,
+	maybe_commit_fn: Option<impl Fn(&str)>,
 ) -> Result<(), Box<dyn Error>> {
 	if let Some(backup_database_fn) = maybe_backup_database_fn {
 		backup_database_fn()?;
 	}
 	let active_plugins = get_active_plugins()?;
-	deactivate_plugins(&active_plugins)?;
+	activate_plugins(false, &active_plugins)?;
 	stream_command(Command::new("wp").args(["core", "update"]))?;
-	activate_plugins(&active_plugins)?;
+	activate_plugins(true, &active_plugins)?;
 	if let Some(commit_fn) = maybe_commit_fn {
 		commit_fn(get_wordpress_version()?.as_str());
 	}
 	Ok(())
 }
 
-fn update<F: Fn(&str) -> Result<(), Box<dyn Error>>, G: Fn(&str, &str, &str)>(
-	maybe_backup_database_fn: Option<F>,
-	maybe_commit_fn: Option<G>,
+fn update(
+	maybe_backup_database_fn: Option<impl Fn(&str) -> Result<(), Box<dyn Error>>>,
+	maybe_commit_fn: Option<impl Fn(&str, &str, &str)>,
 	subcommand: &str,
 ) -> Result<(), Box<dyn Error>> {
 	#[derive(Deserialize)]
@@ -135,23 +123,23 @@ fn update<F: Fn(&str) -> Result<(), Box<dyn Error>>, G: Fn(&str, &str, &str)>(
 	Ok(())
 }
 
-fn update_themes<F: Fn(&str) -> Result<(), Box<dyn Error>>, G: Fn(&str, &str, &str)>(
-	maybe_backup_database_fn: Option<F>,
-	maybe_commit_fn: Option<G>,
+fn update_themes(
+	maybe_backup_database_fn: Option<impl Fn(&str) -> Result<(), Box<dyn Error>>>,
+	maybe_commit_fn: Option<impl Fn(&str, &str, &str)>,
 ) -> Result<(), Box<dyn Error>> {
 	update(maybe_backup_database_fn, maybe_commit_fn, "theme")
 }
 
-fn update_plugins<F: Fn(&str) -> Result<(), Box<dyn Error>>, G: Fn(&str, &str, &str)>(
-	maybe_backup_database_fn: Option<F>,
-	maybe_commit_fn: Option<G>,
+fn update_plugins(
+	maybe_backup_database_fn: Option<impl Fn(&str) -> Result<(), Box<dyn Error>>>,
+	maybe_commit_fn: Option<impl Fn(&str, &str, &str)>,
 ) -> Result<(), Box<dyn Error>> {
 	update(maybe_backup_database_fn, maybe_commit_fn, "plugin")
 }
 
-fn update_translations<F: Fn() -> Result<(), Box<dyn Error>>, G: Fn()>(
-	maybe_backup_database_fn: Option<F>,
-	maybe_commit_fn: Option<G>,
+fn update_translations(
+	maybe_backup_database_fn: Option<impl Fn() -> Result<(), Box<dyn Error>>>,
+	maybe_commit_fn: Option<impl Fn()>,
 ) -> Result<(), Box<dyn Error>> {
 	if let Some(backup_database_fn) = maybe_backup_database_fn {
 		backup_database_fn()?;
@@ -167,8 +155,7 @@ fn update_translations<F: Fn() -> Result<(), Box<dyn Error>>, G: Fn()>(
 
 fn git_add_commit(message: &str) -> Result<(), Box<dyn Error>> {
 	stream_command(Command::new("git").args(["add", "."]))?;
-	stream_command(Command::new("git").args(["commit", "-m", message]))?;
-	Ok(())
+	stream_command(Command::new("git").args(["commit", "-m", message]))
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
