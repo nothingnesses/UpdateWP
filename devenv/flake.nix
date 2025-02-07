@@ -8,7 +8,7 @@
       url = "github:nix-community/fenix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-23.11";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
   };
   nixConfig = {
@@ -42,6 +42,7 @@
                 rust = {
                   channel = "stable";
                   enable = true;
+                  targets = ["x86_64-unknown-linux-musl"];
                 };
               };
               packages = [pkgs-unstable.git pkgs-unstable.wp-cli];
