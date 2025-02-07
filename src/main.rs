@@ -11,13 +11,6 @@ use std::{
 	time::{SystemTime, UNIX_EPOCH},
 };
 
-#[derive(Deserialize)]
-struct Update {
-	name: String,
-	version: String,
-	update_version: String,
-}
-
 fn get_active_plugins() -> Result<Vec<String>, Box<dyn Error>> {
 	#[derive(Deserialize)]
 	struct Plugin {
@@ -79,18 +72,35 @@ fn get_wordpress_version() -> Result<String, Box<dyn Error>> {
 	Ok(String::from_utf8(Command::new("wp").args(["core", "version"]).output()?.stdout)?)
 }
 
-fn update_core() -> Result<(), Box<dyn Error>> {
+fn update_core<F: Fn() -> Result<(), Box<dyn Error>>, G: Fn(&str)>(
+	maybe_backup_database_fn: Option<F>,
+	maybe_commit_fn: Option<G>,
+) -> Result<(), Box<dyn Error>> {
+	if let Some(backup_database_fn) = maybe_backup_database_fn {
+		backup_database_fn()?;
+	}
 	let active_plugins = get_active_plugins()?;
 	deactivate_plugins(&active_plugins)?;
 	stream_command(Command::new("wp").args(["core", "update"]))?;
 	activate_plugins(&active_plugins)?;
+	if let Some(commit_fn) = maybe_commit_fn {
+		commit_fn(get_wordpress_version()?.as_str());
+	}
 	Ok(())
 }
 
-fn update<F: Fn(&str, &str, &str)>(
-	maybe_commit_fn: Option<F>,
+fn update<F: Fn(&str) -> Result<(), Box<dyn Error>>, G: Fn(&str, &str, &str)>(
+	maybe_backup_database_fn: Option<F>,
+	maybe_commit_fn: Option<G>,
 	subcommand: &str,
 ) -> Result<(), Box<dyn Error>> {
+	#[derive(Deserialize)]
+	struct Update {
+		name: String,
+		version: String,
+		update_version: String,
+	}
+
 	let updates = serde_json::from_str::<Vec<Update>>(str::from_utf8(
 		Command::new("wp")
 			.args([
@@ -105,6 +115,9 @@ fn update<F: Fn(&str, &str, &str)>(
 			.as_ref(),
 	)?)?;
 	for update in &updates {
+		if let Some(ref backup_database_fn) = maybe_backup_database_fn {
+			backup_database_fn(update.name.as_str())?;
+		}
 		stream_command(Command::new("wp").args([subcommand, "update", update.name.as_str()]))?;
 		// Delete stray files
 		if let Ok(true) = Path::new("./$XDG_CACHE_HOME").try_exists() {
@@ -122,22 +135,33 @@ fn update<F: Fn(&str, &str, &str)>(
 	Ok(())
 }
 
-fn update_themes<F: Fn(&str, &str, &str)>(
-	maybe_commit_fn: Option<F>,
+fn update_themes<F: Fn(&str) -> Result<(), Box<dyn Error>>, G: Fn(&str, &str, &str)>(
+	maybe_backup_database_fn: Option<F>,
+	maybe_commit_fn: Option<G>,
 ) -> Result<(), Box<dyn Error>> {
-	update(maybe_commit_fn, "theme")
+	update(maybe_backup_database_fn, maybe_commit_fn, "theme")
 }
 
-fn update_plugins<F: Fn(&str, &str, &str)>(
-	maybe_commit_fn: Option<F>,
+fn update_plugins<F: Fn(&str) -> Result<(), Box<dyn Error>>, G: Fn(&str, &str, &str)>(
+	maybe_backup_database_fn: Option<F>,
+	maybe_commit_fn: Option<G>,
 ) -> Result<(), Box<dyn Error>> {
-	update(maybe_commit_fn, "plugin")
+	update(maybe_backup_database_fn, maybe_commit_fn, "plugin")
 }
 
-fn update_translations() -> Result<(), Box<dyn Error>> {
+fn update_translations<F: Fn() -> Result<(), Box<dyn Error>>, G: Fn()>(
+	maybe_backup_database_fn: Option<F>,
+	maybe_commit_fn: Option<G>,
+) -> Result<(), Box<dyn Error>> {
+	if let Some(backup_database_fn) = maybe_backup_database_fn {
+		backup_database_fn()?;
+	}
 	stream_command(Command::new("wp").args(["language", "core", "update"]))?;
 	stream_command(Command::new("wp").args(["language", "theme", "update", "--all"]))?;
 	stream_command(Command::new("wp").args(["language", "plugin", "update", "--all"]))?;
+	if let Some(commit_fn) = maybe_commit_fn {
+		commit_fn();
+	}
 	Ok(())
 }
 
@@ -185,73 +209,257 @@ fn main() -> Result<(), Box<dyn Error>> {
 	}
 
 	for step in cli.steps.deref() {
-		if cli.backup_database {
-			let substituted = cli.database_file_path.replace(
-				"{step}",
+		match (cli.backup_database, cli.commit) {
+			(true, true) => {
+				let commit_prefix = if let Some(ref commit_prefix) = cli.commit_prefix {
+					format!("{commit_prefix}{0}", cli.separator)
+				} else {
+					String::from("")
+				};
 				match step {
-					Step::Core => "update_core",
-					Step::Plugins => "update_plugins",
-					Step::Themes => "update_themes",
-					Step::Translations => "update_translations",
-				},
-			);
-			let substituted = substituted.replace(
-				"{unix_time}",
-				&format!("{}", SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()),
-			);
-			backup_database(&substituted)?;
-		}
-		if cli.commit {
-			let commit_prefix = if let Some(ref commit_prefix) = cli.commit_prefix {
-				format!("{commit_prefix}{0}", cli.separator)
-			} else {
-				String::from("")
-			};
-			match step {
-				Step::Core => {
-					let version = get_wordpress_version()?;
-					update_core()?;
-					git_add_commit(
-						format!(
-							"{commit_prefix}Update WordPress Core{0}{version} -> {1}",
-							cli.separator,
-							get_wordpress_version()?
+					Step::Core => {
+						let version = get_wordpress_version()?;
+						update_core(
+							Some(|| -> Result<(), Box<dyn Error>> {
+								let substituted =
+									cli.database_file_path.replace("{step}", "update_core");
+								let substituted = substituted.replace(
+									"{unix_time}",
+									&format!(
+										"{}",
+										SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()
+									),
+								);
+								backup_database(&substituted)?;
+								Ok(())
+							}),
+							Some(|new_version: &_| {
+								let _ = git_add_commit(
+									format!(
+										"{commit_prefix}Update WordPress Core{0}{version} -> {1}",
+										cli.separator, new_version
+									)
+									.as_str(),
+								);
+							}),
 						)
-						.as_str(),
-					)
-				}
-				Step::Plugins => {
-					update_plugins(Some(|name: &_, version: &_, update_version: &_| {
-						let _ = git_add_commit(
-							format!(
-							"{commit_prefix}Update plugin{0}{name}{0}{version} -> {update_version}", cli.separator
+					}
+					Step::Plugins => update_plugins(
+						Some(|name: &_| {
+							let substituted = cli
+								.database_file_path
+								.replace("{step}", format!("update_plugin.{name}").as_str());
+							let substituted = substituted.replace(
+								"{unix_time}",
+								&format!(
+									"{}",
+									SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()
+								),
+							);
+							backup_database(&substituted)?;
+							Ok(())
+						}),
+						Some(|name: &_, version: &_, update_version: &_| {
+							let _ = git_add_commit(
+								format!(
+								"{commit_prefix}Update plugin{0}{name}{0}{version} -> {update_version}", cli.separator
+							)
+								.as_str(),
+							);
+						}),
+					),
+					Step::Themes => update_themes(
+						Some(|name: &_| {
+							let substituted = cli
+								.database_file_path
+								.replace("{step}", format!("update_theme.{name}").as_str());
+							let substituted = substituted.replace(
+								"{unix_time}",
+								&format!(
+									"{}",
+									SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()
+								),
+							);
+							backup_database(&substituted)?;
+							Ok(())
+						}),
+						Some(|name: &_, version: &_, update_version: &_| {
+							let _ = git_add_commit(
+								format!(
+								"{commit_prefix}Update theme{0}{name}{0}{version} -> {update_version}",
+								cli.separator
+							)
+								.as_str(),
+							);
+						}),
+					),
+					Step::Translations => update_translations(
+						Some(|| -> Result<(), Box<dyn Error>> {
+							let substituted =
+								cli.database_file_path.replace("{step}", "update_translations");
+							let substituted = substituted.replace(
+								"{unix_time}",
+								&format!(
+									"{}",
+									SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()
+								),
+							);
+							backup_database(&substituted)?;
+							Ok(())
+						}),
+						Some(|| {
+							let _ = git_add_commit(
+								format!("{commit_prefix}Update translations").as_str(),
+							);
+						}),
+					),
+				}?;
+			}
+			(true, false) => {
+				match step {
+					Step::Core => update_core(
+						Some(|| -> Result<(), Box<dyn Error>> {
+							let substituted =
+								cli.database_file_path.replace("{step}", "update_core");
+							let substituted = substituted.replace(
+								"{unix_time}",
+								&format!(
+									"{}",
+									SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()
+								),
+							);
+							backup_database(&substituted)?;
+							Ok(())
+						}),
+						None::<Box<dyn Fn(&str)>>,
+					),
+					Step::Plugins => update_plugins(
+						Some(|name: &_| {
+							let substituted = cli
+								.database_file_path
+								.replace("{step}", format!("update_plugin.{name}").as_str());
+							let substituted = substituted.replace(
+								"{unix_time}",
+								&format!(
+									"{}",
+									SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()
+								),
+							);
+							backup_database(&substituted)?;
+							Ok(())
+						}),
+						None::<Box<dyn Fn(&str, &str, &str)>>,
+					),
+					Step::Themes => update_themes(
+						Some(|name: &_| {
+							let substituted = cli
+								.database_file_path
+								.replace("{step}", format!("update_theme.{name}").as_str());
+							let substituted = substituted.replace(
+								"{unix_time}",
+								&format!(
+									"{}",
+									SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()
+								),
+							);
+							backup_database(&substituted)?;
+							Ok(())
+						}),
+						None::<Box<dyn Fn(&str, &str, &str)>>,
+					),
+					Step::Translations => update_translations(
+						Some(|| -> Result<(), Box<dyn Error>> {
+							let substituted =
+								cli.database_file_path.replace("{step}", "update_translations");
+							let substituted = substituted.replace(
+								"{unix_time}",
+								&format!(
+									"{}",
+									SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()
+								),
+							);
+							backup_database(&substituted)?;
+							Ok(())
+						}),
+						None::<Box<dyn Fn()>>,
+					),
+				}?;
+			}
+			(false, true) => {
+				let commit_prefix = if let Some(ref commit_prefix) = cli.commit_prefix {
+					format!("{commit_prefix}{0}", cli.separator)
+				} else {
+					String::from("")
+				};
+				match step {
+					Step::Core => {
+						let version = get_wordpress_version()?;
+						update_core(
+							None::<Box<dyn Fn() -> Result<(), Box<dyn Error>>>>,
+							Some(|new_version: &_| {
+								let _ = git_add_commit(
+									format!(
+										"{commit_prefix}Update WordPress Core{0}{version} -> {1}",
+										cli.separator, new_version
+									)
+									.as_str(),
+								);
+							}),
 						)
-							.as_str(),
-						);
-					}))
-				}
-				Step::Themes => update_themes(Some(|name: &_, version: &_, update_version: &_| {
-					let _ = git_add_commit(
-						format!(
-							"{commit_prefix}Update theme{0}{name}{0}{version} -> {update_version}",
-							cli.separator
-						)
-						.as_str(),
-					);
-				})),
-				Step::Translations => {
-					update_translations()?;
-					git_add_commit(format!("{commit_prefix}Update translations").as_str())
-				}
-			}?;
-		} else {
-			let none = None::<Box<dyn Fn(&str, &str, &str)>>;
-			match step {
-				Step::Core => update_core(),
-				Step::Plugins => update_plugins(none),
-				Step::Themes => update_themes(none),
-				Step::Translations => update_translations(),
-			}?;
+					}
+					Step::Plugins => update_plugins(
+						None::<Box<dyn Fn(&_) -> Result<(), Box<dyn Error>>>>,
+						Some(|name: &_, version: &_, update_version: &_| {
+							let _ = git_add_commit(
+								format!(
+								"{commit_prefix}Update plugin{0}{name}{0}{version} -> {update_version}", cli.separator
+							)
+								.as_str(),
+							);
+						}),
+					),
+					Step::Themes => update_themes(
+						None::<Box<dyn Fn(&_) -> Result<(), Box<dyn Error>>>>,
+						Some(|name: &_, version: &_, update_version: &_| {
+							let _ = git_add_commit(
+								format!(
+								"{commit_prefix}Update theme{0}{name}{0}{version} -> {update_version}",
+								cli.separator
+							)
+								.as_str(),
+							);
+						}),
+					),
+					Step::Translations => update_translations(
+						None::<Box<dyn Fn() -> Result<(), Box<dyn Error>>>>,
+						Some(|| {
+							let _ = git_add_commit(
+								format!("{commit_prefix}Update translations").as_str(),
+							);
+						}),
+					),
+				}?;
+			}
+			(false, false) => {
+				match step {
+					Step::Core => update_core(
+						None::<Box<dyn Fn() -> Result<(), Box<dyn Error>>>>,
+						None::<Box<dyn Fn(&str)>>,
+					),
+					Step::Plugins => update_plugins(
+						None::<Box<dyn Fn(&_) -> Result<(), Box<dyn Error>>>>,
+						None::<Box<dyn Fn(&str, &str, &str)>>,
+					),
+					Step::Themes => update_themes(
+						None::<Box<dyn Fn(&_) -> Result<(), Box<dyn Error>>>>,
+						None::<Box<dyn Fn(&str, &str, &str)>>,
+					),
+					Step::Translations => update_translations(
+						None::<Box<dyn Fn() -> Result<(), Box<dyn Error>>>>,
+						None::<Box<dyn Fn()>>,
+					),
+				}?;
+			}
 		}
 	}
 
